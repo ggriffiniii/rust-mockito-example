@@ -6,15 +6,16 @@ use hyper::{
 use hyper_tls::HttpsConnector;
 use serde_derive::{Deserialize, Serialize};
 use serde_json::from_slice;
+use std::sync::Arc;
 
-#[cfg(test)]
-use mockito;
-
-#[cfg(not(test))]
 const CATS_URL: &str = "https://cat-fact.herokuapp.com";
 
-#[cfg(not(test))]
 const TODO_URL: &str = "https://jsonplaceholder.typicode.com";
+
+struct ServerCfg{
+    cats_url: String,
+    todo_url: String,
+}
 
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 type Result<T> = std::result::Result<T, Error>;
@@ -30,35 +31,27 @@ struct TODO {
     title: String,
 }
 
-fn get_cats_url() -> String {
-    #[cfg(not(test))]
-    let url = format!("{}/facts/random", CATS_URL);
-    #[cfg(test)]
-    let url = format!("{}/facts/random", mockito::server_url());
-    url
+fn get_cats_url(base_url: &str) -> String {
+    format!("{}/facts/random", base_url)
 }
 
-fn get_todo_url() -> String {
-    #[cfg(not(test))]
-    let url = format!("{}/todos/1", TODO_URL);
-    #[cfg(test)]
-    let url = format!("{}/todos/1", mockito::server_url());
-    url
+fn get_todo_url(base_url: &str) -> String {
+    format!("{}/todos/1", base_url)
 }
 
-async fn basic(_req: Request<Body>, client: &HttpClient) -> Result<Body> {
-    let res = do_get_req(&get_todo_url(), &client).await?;
+async fn basic(_req: Request<Body>, client: &HttpClient, todo_url: &str) -> Result<Body> {
+    let res = do_get_req(&get_todo_url(todo_url), &client).await?;
     let body = to_bytes(res.into_body()).await?;
     let todo: TODO = from_slice(&body)?;
     Ok(todo.title.into())
 }
 
-async fn double(_req: Request<Body>, client: &HttpClient) -> Result<Body> {
-    let res_todo = do_get_req(&get_todo_url(), &client).await?;
+async fn double(_req: Request<Body>, client: &HttpClient, cats_url: &str, todo_url: &str) -> Result<Body> {
+    let res_todo = do_get_req(&get_todo_url(todo_url), &client).await?;
     let body_todo = to_bytes(res_todo.into_body()).await?;
     let todo: TODO = from_slice(&body_todo)?;
 
-    let res_cats = do_get_req(&get_cats_url(), &client).await?;
+    let res_cats = do_get_req(&get_cats_url(cats_url), &client).await?;
     let body_cats = to_bytes(res_cats.into_body()).await?;
     let fact: CatFact = from_slice(&body_cats)?;
     Ok(format!("Todo: {}, Cat Fact: {}", todo.title, fact.text).into())
@@ -73,15 +66,15 @@ async fn do_get_req(uri: &str, client: &HttpClient) -> Result<Response<Body>> {
     Ok(res)
 }
 
-async fn route(req: Request<Body>, client: HttpClient) -> Result<Response<Body>> {
+async fn route(req: Request<Body>, client: HttpClient, cfg: Arc<ServerCfg>) -> Result<Response<Body>> {
     let mut response = Response::new(Body::empty());
 
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/basic") => {
-            *response.body_mut() = basic(req, &client).await?;
+            *response.body_mut() = basic(req, &client, &cfg.todo_url).await?;
         }
         (&Method::GET, "/double") => {
-            *response.body_mut() = double(req, &client).await?;
+            *response.body_mut() = double(req, &client, &cfg.cats_url, &cfg.todo_url).await?;
         }
         _ => {
             *response.status_mut() = StatusCode::NOT_FOUND;
@@ -96,11 +89,23 @@ fn init_client() -> HttpClient {
 }
 
 async fn run_server() -> Result<()> {
+    _run_server(ServerCfg{
+        cats_url: CATS_URL.to_owned(),
+        todo_url: TODO_URL.to_owned(),
+    }).await
+}
+
+async fn _run_server(cfg: ServerCfg) -> Result<()> {
     let client = init_client();
+    let cfg = Arc::new(cfg);
 
     let new_service = make_service_fn(move |_| {
         let client_clone = client.clone();
-        async { Ok::<_, Error>(service_fn(move |req| route(req, client_clone.clone()))) }
+        let cfg = cfg.clone();
+
+        async { Ok::<_, Error>(service_fn(
+            move |req| route(req, client_clone.clone(), cfg.clone())
+        ))}
     });
     let addr = "127.0.0.1:3000".parse().unwrap();
     let server = Server::bind(&addr).serve(new_service);
@@ -133,8 +138,13 @@ mod tests {
         let mut rt = Runtime::new().unwrap();
         let client = init_client();
 
+        let cfg = ServerCfg{
+            cats_url: mockito::server_url(),
+            todo_url: mockito::server_url(),
+        };
+
         // start server
-        rt.spawn(run_server());
+        rt.spawn(_run_server(cfg));
 
         // wait for server to come up
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -169,8 +179,13 @@ mod tests {
             .with_body(r#"{"title": "get another cat"}"#)
             .create();
 
+        let cfg = ServerCfg{
+            cats_url: mockito::server_url(),
+            todo_url: mockito::server_url(),
+        };
+
         // start server
-        rt.spawn(run_server());
+        rt.spawn(_run_server(cfg));
 
         // wait for server to come up
         std::thread::sleep(std::time::Duration::from_millis(50));
