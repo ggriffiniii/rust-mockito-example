@@ -32,11 +32,11 @@ struct TODO {
 }
 
 fn get_cats_url(base_url: &str) -> String {
-    format!("{}/facts/random", base_url)
+    format!("{}facts/random", base_url)
 }
 
 fn get_todo_url(base_url: &str) -> String {
-    format!("{}/todos/1", base_url)
+    format!("{}todos/1", base_url)
 }
 
 async fn basic(_req: Request<Body>, client: &HttpClient, todo_url: &str) -> Result<Body> {
@@ -124,23 +124,25 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mockito::mock;
+    use httptest::{Expectation, mappers::*, responders::*};
+    use serde_json::json;
     use tokio::runtime::Runtime;
 
     #[test]
     fn test_basic() {
-        let _mt = mock("GET", "/todos/1")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"title": "get another cat"}"#)
-            .create();
+        let server = httptest::Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/todos/1"))
+            .respond_with(json_encoded(json!({
+                "title": "get another cat"
+            }))));
 
         let mut rt = Runtime::new().unwrap();
         let client = init_client();
 
         let cfg = ServerCfg{
-            cats_url: mockito::server_url(),
-            todo_url: mockito::server_url(),
+            cats_url: server.url_str("/"),
+            todo_url: server.url_str("/"),
         };
 
         // start server
@@ -167,21 +169,23 @@ mod tests {
     fn test_double() {
         let mut rt = Runtime::new().unwrap();
         let client = init_client();
-        let _mc = mock("GET", "/facts/random")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"text": "cats are the best living creatures in the universe"}"#)
-            .create();
-
-        let _mt = mock("GET", "/todos/1")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"title": "get another cat"}"#)
-            .create();
+        let server = httptest::Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/facts/random"))
+            .respond_with(
+                json_encoded(json!({
+                    "text": "cats are the best living creatures in the universe"
+                }))));
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/todos/1"))
+            .respond_with(
+                json_encoded(json!({
+                    "title": "get another cat"
+                }))));
 
         let cfg = ServerCfg{
-            cats_url: mockito::server_url(),
-            todo_url: mockito::server_url(),
+            cats_url: server.url_str("/"),
+            todo_url: server.url_str("/"),
         };
 
         // start server
